@@ -1,0 +1,31 @@
+{
+  "chunks_processed": 50,
+  "drop_rates": [
+    "0",
+    "10",
+    "20",
+    "30"
+  ],
+  "perplexities": {
+    "0": {
+      "perplexity": 12.213153398007929,
+      "nll_sum": 64064.34606933594,
+      "token_count": 25600
+    },
+    "10": {
+      "perplexity": 26.583814754330223,
+      "nll_sum": 75610.97407054901,
+      "token_count": 23050
+    },
+    "20": {
+      "perplexity": 48.57034376243572,
+      "nll_sum": 79601.76924705505,
+      "token_count": 20500
+    },
+    "30": {
+      "perplexity": 82.84365180453472,
+      "nll_sum": 79284.34437131882,
+      "token_count": 17950
+    }
+  }
+}

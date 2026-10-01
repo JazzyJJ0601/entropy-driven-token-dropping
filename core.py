@@ -81,7 +81,7 @@ class EntropyTokenDropper:
             mask = torch.zeros_like(entropies, dtype=torch.bool)
             mask[indices] = True
         
-        return mask
+        return mask.to(entropies.device)
     
     def _attention_hook(self, module: nn.Module, 
                         input: Tuple, 
@@ -153,7 +153,7 @@ class EntropyTokenDropper:
             return torch.ones(seq_len, dtype=torch.bool)
         
         # Combine masks across layers (keep token if kept in any layer)
-        combined = torch.zeros(seq_len, dtype=torch.bool)
+        combined = torch.zeros(seq_len, dtype=torch.bool, device=self.attention_masks[0].device)
         for mask in self.attention_masks:
             if mask.numel() == seq_len:
                 combined = combined | mask
