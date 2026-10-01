@@ -1,0 +1,31 @@
+{
+  "setup": {
+    "model": "Qwen3-8B",
+    "context": 512,
+    "continuation": 64,
+    "passages": {
+      "test": 40,
+      "dev": 10
+    },
+    "sinks": 4,
+    "recent_share": 0.25
+  },
+  "test/full": 8.066,
+  "test/recent@0.5": 9.012,
+  "test/random@0.5": 9.007,
+  "test/h2o@0.5": 8.661,
+  "test/edtd@0.5": 8.62,
+  "test/recent@0.25": 10.096,
+  "test/random@0.25": 9.783,
+  "test/h2o@0.25": 9.61,
+  "test/edtd@0.25": 9.326,
+  "dev/full": 11.749,
+  "dev/recent@0.5": 12.684,
+  "dev/random@0.5": 14.125,
+  "dev/h2o@0.5": 14.433,
+  "dev/edtd@0.5": 14.268,
+  "dev/recent@0.25": 14.502,
+  "dev/random@0.25": 16.239,
+  "dev/h2o@0.25": 17.175,
+  "dev/edtd@0.25": 16.269
+}

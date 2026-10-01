@@ -1,107 +1,88 @@
 # Entropy-Driven Token Dropping (EDTD)
 
-A prototype implementation of entropy-based token pruning for transformer models. This technique dynamically identifies and marks low-importance tokens based on their attention entropy, enabling memory-efficient inference for long sequences.
+When a language model's KV cache has to shrink, which old tokens should stay? The standard answer
+(H2O, "Heavy-Hitter Oracle") keeps the tokens that have received the most attention. EDTD changes one
+thing: **each query's attention is weighted by how focused it is.** A query that spreads its attention
+over everything (high entropy) says little about which tokens matter; a query that locks onto a few
+tokens (low entropy) is doing retrieval, and those are the tokens worth keeping.
 
-## Experimental Results
+```
+focus(q)   = 1 - H(attention of q) / log(number of tokens q can see)
+score(tok) = sum over layers, heads, queries of  attention(q -> tok) * focus(q)
+```
 
-We measured the impact of masking the lowest-entropy tokens at different rates. The model is Qwen3-8B, evaluated on 50 chunks.
+H2O is the same sum without `focus(q)`.
 
-| Drop Rate | Scored Tokens | Mean NLL per Token | Perplexity |
-|-----------|---------------|-------------------|------------|
-| 0%        | 25600         | 2.50              | 12.21      |
-| 10%       | 23050         | 3.28              | 26.58      |
-| 20%       | 20500         | 3.88              | 48.57      |
-| 30%       | 17950         | 4.42              | 82.84      |
+## Result (Qwen3-8B, real KV-cache eviction)
 
-## What Is Measured
+The 512-token context is run into the cache. Then tokens are evicted from every layer's cache
+(original RoPE positions kept). Finally, perplexity is measured on the next 64 tokens. Every
+method keeps 4 attention-sink tokens and a recent window, and spends the rest of the budget its own way.
 
-This experiment measures **context-masking drop of the lowest-entropy tokens**: we rank tokens by attention entropy, mask the bottom fraction, and count loss only on the remaining tokens. The "Mean NLL per Token" is negative log-likelihood divided by the number of scored tokens.
+**Main result: 200 held-out WikiText-2 passages** (chosen before the run, no overlap with the
+development passages; `holdout.json`)
 
-## Interpretation
+| Cache kept | Full cache | Recent only (StreamingLLM) | Random | H2O | **EDTD** |
+|---|---|---|---|---|---|
+| 50% | 9.35 | 10.30 | 10.37 | 10.20 | **10.01** |
+| 25% | 9.35 | 11.51 | 11.90 | 11.70 | **11.33** |
 
-Quality falls steeply as drop rate increases. At 10% drop, perplexity jumps from 12.2 to 26.6; at 30% drop, it reaches 82.8. **This is NOT a free compression method**—the performance cost is substantial even at modest drop rates.
+Paired, passage by passage (mean loss difference in nats/token, 95% bootstrap interval):
 
-## Next Steps
+| EDTD vs | 50% kept | 25% kept |
+|---|---|---|
+| H2O | better on 124/200, +0.019 [0.012, 0.027] | better on 129/200, +0.033 [0.022, 0.045] |
+| Random | better on 121/200, +0.035 [0.019, 0.054] | better on 124/200, +0.049 [0.027, 0.071] |
+| Recent only | better on 100/200, +0.029 [0.006, 0.052] | better on 101/200, +0.016 [−0.018, 0.051] |
 
-- Compare with random dropping at the same rate (add baseline row if under 40 minutes compute)
-- Test alternative entropy thresholds (e.g., top-k instead of percentiles)
-- Evaluate on different model sizes and architectures
-- Measure actual inference speedup and memory savings
+**What this shows, plainly:**
 
-## Installation
+- **EDTD beats H2O at both budgets.** The interval is well clear of zero. At 25% kept, it closes about
+  16% of H2O's gap to the full cache (11.70 → 11.33, with full at 9.35).
+- **H2O is not a strong baseline here.** It barely beats random tokens, and at 25% it loses to simply
+  keeping the most recent tokens. Raw attention sums favour early tokens, because every later query can
+  see them. Focus weighting removes much of that bias.
+- **Against "just keep the recent tokens", EDTD wins on average at 50%, but not on most passages.** It
+  wins 100 of 200: a few passages gain a lot, and the rest are a wash. At 25% the difference is not
+  significant. A recent window is a hard baseline on running text like WikiText. Long-range
+  retrieval tasks are where a scored cache should matter more; that is not tested here.
+
+### Development runs, and why the 200-passage run exists
+
+The first run (`eviction.json`) used 40 test passages and 10 development passages.
+
+- **On the 40 test passages**, EDTD beat H2O: 8.62 vs 8.66 at 50% kept, and 9.33 vs 9.61 at 25%.
+- **On the 10 development passages, keeping only recent tokens won outright.** Every scored method did
+  worse there, including H2O.
+
+Ten passages is too few to tell a real effect from noise, so the whole comparison was re-run on 200 fresh
+passages. The development result did not hold up: on the large set, "recent only" is no better than EDTD.
+
+## The earlier version of this repo was wrong
+
+The first version masked tokens inside a single forward pass and scored loss only on the tokens left.
+That measures neither cache memory nor quality fairly, and it had no baseline. It reported perplexity
+going from 12.2 to 26.6 at 10% "dropped". That code and its numbers have been removed. Everything above
+comes from real cache eviction against standard baselines.
+
+## Run it
 
 ```bash
-pip install torch
+pip install torch transformers datasets numpy
+python run_eviction.py                                         # 40 test + 10 dev passages -> eviction.json
+python run_eviction.py --start 50 --count 200 --out holdout.json   # held-out run, with per-passage losses
+pytest -q tests
 ```
 
-## Usage
+Set `MODEL` in `run_eviction.py` to your local Qwen3-8B path. It uses about 18 GB of GPU memory in bf16
+with eager attention; the 200-passage run took about 3 minutes on an RTX 3090 Ti.
 
-```python
-from repos.edtd.core import EntropyTokenDropper
-import torch
+## Limits
 
-# Initialize dropper with custom threshold factor
-dropper = EntropyTokenDropper(threshold_factor=1.0)
-
-# Register hooks on a transformer model (e.g., GPT-2)
-from transformers import AutoModelForCausalLM
-model = AutoModelForCausalLM.from_pretrained("Qwen3-8B")  # or any HF causal LM
-dropper.register_hooks(model)
-
-# Run inference
-inputs = torch.tensor([[1, 2, 3, 4, 5]])
-with torch.no_grad():
-    outputs = model(inputs)
-
-# Get combined mask for token retention
-mask = dropper.get_combined_mask(seq_len=5)
-print(f"Keeping {mask.sum()} of {len(mask)} tokens")
-
-# Clean up
-dropper.remove_hooks()
-```
-
-## API
-
-### EntropyTokenDropper
-
-| Method | Description |
-|--------|-------------|
-| `compute_shannon_entropy(probs, dim=-1)` | Compute Shannon entropy of probability distribution |
-| `compute_dynamic_threshold(entropies)` | Get dynamic threshold from median entropy |
-| `create_token_mask(entropies, num_tokens=None)` | Create boolean mask for token dropping |
-| `register_hooks(model)` | Attach forward hooks to attention layers |
-| `get_combined_mask(seq_len)` | Combine masks across all layers |
-| `remove_hooks()` | Clean up registered hooks |
-
-## Testing
-
-```bash
-pytest repos/edtd/tests/test_basic.py
-```
-
-## How It Works
-
-1. **Hook Attachment**: Forward hooks capture attention weights from transformer layers
-2. **Entropy Computation**: Shannon entropy (-Σ p log p) calculated per token
-3. **Dynamic Thresholding**: Threshold = median(entropy) × factor
-4. **Mask Generation**: Tokens with entropy ≥ threshold are retained
-5. **Cache Management**: Boolean mask used to prune KV cache during inference
-
-## Performance
-
-Expected benefits:
-- **Memory**: 30-50% reduction in KV cache size for long sequences
-- **Speed**: Proportional improvement in inference time for large batches
-- **Quality**: Minimal accuracy degradation on well-tuned threshold factors
-
-## Files
-
-- `repos.edtd/core.py`: Core EDTD implementation
-- `repos.edtd/finalize.py`: Results computation script
-- `repos.edtd/partial.json`: Intermediate results data
-- `repos.edtd/results.json`: Final perplexity results
-
-## License
+- Attention scores come from the prefill pass (one-shot eviction after the prompt), not continuous
+  eviction during long generation.
+- Scoring needs the full attention matrices (eager attention), so it is a measurement of *which tokens to
+  keep*, not a fast kernel.
+- Tested on one model, one dataset, and a 512-token context.
 
 MIT License
